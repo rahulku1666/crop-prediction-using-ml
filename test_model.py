@@ -1,120 +1,120 @@
-import pickle
 import numpy as np
 import pandas as pd
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, cross_val_score
+import pickle
 
 def load_model_and_scaler():
     """Load the trained model and scaler"""
-    model = pickle.load(open('crop_model.pkl', 'rb'))
-    scaler = pickle.load(open('scaler.pkl', 'rb'))
-    return model, scaler
+    try:
+        model = pickle.load(open('crop_model.pkl', 'rb'))
+        scaler = pickle.load(open('scaler.pkl', 'rb'))
+        return model, scaler
+    except FileNotFoundError:
+        raise Exception("Model files not found. Please train the model first.")
+    except Exception as e:
+        raise Exception(f"Error loading model: {str(e)}")
+
+def train_knn_model(data_path='Crop_recommendation.csv', n_neighbors=5):
+    """Train KNN model for crop prediction"""
+    try:
+        # Load and prepare data
+        print("Loading dataset...")
+        df = pd.read_csv(data_path)
+        print(f"Dataset shape: {df.shape}")
+        print("Columns:", list(df.columns))
+        X = df.drop('label', axis=1)
+        y = df['label']
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_scaled, y, test_size=0.2, random_state=42
+        )
+        
+        # Train KNN model
+        knn = KNeighborsClassifier(n_neighbors=n_neighbors)
+        knn.fit(X_train, y_train)
+        
+        # Calculate metrics
+        accuracy = knn.score(X_test, y_test)
+        cv_scores = cross_val_score(knn, X_scaled, y, cv=5)
+        
+        # Save model and scaler
+        pickle.dump(knn, open('crop_model.pkl', 'wb'))
+        pickle.dump(scaler, open('scaler.pkl', 'wb'))
+        
+        return {
+            'accuracy': accuracy,
+            'cv_score': cv_scores.mean(),
+            'model': knn,
+            'scaler': scaler
+        }
+    except Exception as e:
+        print(f"Error loading dataset: {str(e)}")
+        raise
 
 def predict_crop(N, P, K, temperature, humidity, ph, rainfall):
-    """
-    Make crop prediction based on input parameters using a Random Forest model
-    (Accuracy: 90%, Cross-validation: 88.5%)
-
-    Feature Importance:
-    ------------------
-    - Rainfall: 18.36%
-    - Humidity: 17.89%
-    - Nitrogen: 16.45%
-    - pH: 15.51%
-    - Potassium: 14.11%
-    - Temperature: 9.73%
-    - Phosphorus: 7.95%
-
-    Parameters:
-    -----------
-    N : float/int
-        Nitrogen content in soil (0-140)
-    P : float/int
-        Phosphorus content in soil (5-145)
-    K : float/int
-        Potassium content in soil (5-205)
-    temperature : float/int
-        Temperature in Celsius (8-45)
-    humidity : float/int
-        Relative humidity percentage (14-100)
-    ph : float/int
-        Soil pH value (3.5-10)
-    rainfall : float/int
-        Rainfall in mm (20-300)
-
-    Returns:
-    --------
-    tuple: (predicted_crop, confidence)
-        predicted_crop: str - Name of the predicted crop
-        confidence: float - Prediction confidence (0-1)
-    """
-    # Type validation
-    params = {'N': N, 'P': P, 'K': K, 'temperature': temperature, 
-             'humidity': humidity, 'ph': ph, 'rainfall': rainfall}
-    
-    for param_name, value in params.items():
-        if not isinstance(value, (int, float)):
-            raise TypeError(f"{param_name} must be a number, got {type(value).__name__}")
-    
-    # Range validation
-    validations = {
-        'N': (0, 140),
-        'P': (5, 145),
-        'K': (5, 205),
-        'temperature': (8, 45),
-        'humidity': (14, 100),
-        'ph': (3.5, 10),
-        'rainfall': (20, 300)
+    """Make crop prediction using KNN model"""
+    # Parameter validation
+    params = {
+        'N': (N, 0, 140, "Nitrogen"),
+        'P': (P, 5, 145, "Phosphorus"),
+        'K': (K, 5, 205, "Potassium"),
+        'temperature': (temperature, 0, 45, "Temperature"),
+        'humidity': (humidity, 0, 100, "Humidity"),
+        'ph': (ph, 0, 14, "pH"),
+        'rainfall': (rainfall, 0, 300, "Rainfall")
     }
     
-    for param_name, (min_val, max_val) in validations.items():
-        value = params[param_name]
-        if not (min_val <= value <= max_val):
-            raise ValueError(
-                f"{param_name} should be between {min_val} and {max_val}, got {value}"
-            )
+    # Validate parameter ranges
+    for param, (value, min_val, max_val, name) in params.items():
+        if not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a number")
+        if value < min_val or value > max_val:
+            raise ValueError(f"{name} should be between {min_val} and {max_val}")
     
     # Load model and scaler
     model, scaler = load_model_and_scaler()
     
-    # Create DataFrame with proper feature names
+    # Prepare input data
     features = ['N', 'P', 'K', 'temperature', 'humidity', 'ph', 'rainfall']
     input_data = pd.DataFrame([[N, P, K, temperature, humidity, ph, rainfall]], 
                              columns=features)
     
-    # Scale the input data
+    # Scale and predict
     input_scaled = scaler.transform(input_data)
-    
-    # Make prediction
     prediction = model.predict(input_scaled)
     probabilities = model.predict_proba(input_scaled)
     
-    # Get the highest probability
-    max_prob = np.max(probabilities)
-    
-    return prediction[0], max_prob
+    return prediction[0], np.max(probabilities)
 
-# Test the model with sample data
+# Test the model
 if __name__ == "__main__":
-    # Example input values
-    sample_input = {
-        'N': 90,
-        'P': 42,
-        'K': 43,
-        'temperature': 20.87,
-        'humidity': 82.00,
-        'ph': 6.5,
-        'rainfall': 202.935
-    }
-    
-    # Make prediction
-    predicted_crop, confidence = predict_crop(
-        sample_input['N'], sample_input['P'], sample_input['K'],
-        sample_input['temperature'], sample_input['humidity'],
-        sample_input['ph'], sample_input['rainfall']
-    )
-    
-    print(f"\nInput Parameters:")
-    for param, value in sample_input.items():
-        print(f"{param}: {value}")
-    
-    print(f"\nPredicted Crop: {predicted_crop}")
-    print(f"Confidence: {confidence:.2%}")
+    try:
+        # Train the model
+        print("Training KNN model...")
+        results = train_knn_model()
+        print(f"Model Accuracy: {results['accuracy']:.2%}")
+        print(f"Cross-validation Score: {results['cv_score']:.2%}")
+        
+        # Define test input parameters
+        N = 90  # Nitrogen content
+        P = 42  # Phosphorus content
+        K = 43  # Potassium content
+        temperature = 20.87
+        humidity = 82.00
+        ph = 6.5
+        rainfall = 202.935
+        
+        # Make prediction
+        crop, confidence = predict_crop(N, P, K, temperature, humidity, ph, rainfall)
+        print(f"\nPredicted Crop: {crop}")
+        print(f"Confidence: {confidence:.2%}")
+        
+    except Exception as e:
+        print(f"⚠️ Error: {str(e)}")
