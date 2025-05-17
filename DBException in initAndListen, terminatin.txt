@@ -1,0 +1,1 @@
+DBException in initAndListen, terminating: NonExistentPath: Data directory C:\Users\RAHUL\Desktop\rahulpython\data\db not found.

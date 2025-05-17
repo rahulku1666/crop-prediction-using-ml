@@ -1,0 +1,2 @@
+$ mkdir "C:\Users\RAHUL\Desktop\rahulpython\data\db"
+mkdir: cannot create directory 'C:\\Users\\RAHUL\\Desktop\\rahulpython\\data\\db': No such file or directory

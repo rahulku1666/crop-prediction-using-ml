@@ -1,0 +1,8 @@
+Training KNN model...
+Model Accuracy: XX.XX%
+Cross-validation Score: XX.XX%Training KNN model...
+Model Accuracy: XX.XX%
+Cross-validation Score: XX.XX%
+
+Predicted Crop: [crop name]
+Confidence: XX.XX%

@@ -1,467 +1,820 @@
 import streamlit as st
+
+# Set page config must be the first Streamlit command
+st.set_page_config(
+    page_title="Smart Farming Assistant",
+    page_icon="🌿",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Import all required libraries
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from test_model import predict_crop
-import time
+import numpy as np
 from datetime import datetime
-import hashlib
-import pymongo
+import os
+import requests
+import pickle
+from modules.styles import load_css
 
-# MongoDB connection
-def connect_to_mongodb():
-    try:
-        client = pymongo.MongoClient("mongodb://localhost:27017/")
-        db = client["farm_app"]
-        return db
-    except Exception as e:
-        st.error(f"Could not connect to MongoDB: {e}")
-        return None
-
-# User collection operations
-def create_user(db, username, password, email, name, location):
-    users = db["users"]
-    hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    user = {
-        "username": username,
-        "password": hashed_password,
-        "email": email,
-        "name": name,
-        "location": location,
-        "created_at": datetime.now(),
-        "last_login": None
-    }
-    try:
-        users.insert_one(user)
-        return True
-    except Exception as e:
-        st.error(f"Error creating user: {e}")
-        return False
-
-def verify_user(db, username, password):
-    users = db["users"]
-    hashed_password = hashlib.sha256(password.encode()).hexdigest()
-    user = users.find_one({"username": username, "password": hashed_password})
-    if user:
-        users.update_one(
-            {"username": username},
-            {"$set": {"last_login": datetime.now()}}
-        )
-        return True
-    return False
-
-def show_login_page():
-    st.title("🌾 Smart Crop Recommendation System")
-    
-    # Create tabs for login and registration
-    tab1, tab2 = st.tabs(["Login", "Register"])
-    
-    with tab1:
-        with st.form("login_form"):
-            st.markdown("""
-                <div style='background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
-                    <h2 style='text-align: center; color: #2E7D32;'>👤 Farmer Login</h2>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                submit_login = st.form_submit_button("Login", use_container_width=True)
-                
-                if submit_login:
-                    db = connect_to_mongodb()
-                    if db and verify_user(db, username, password):
-                        st.success("Login successful!")
-                        st.session_state.logged_in = True
-                        st.session_state.username = username
-                        st.rerun()
-                    else:
-                        st.error("Invalid username or password")
-    
-    with tab2:
-        with st.form("register_form"):
-            st.markdown("""
-                <div style='background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
-                    <h2 style='text-align: center; color: #2E7D32;'>📝 New Farmer Registration</h2>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            new_username = st.text_input("Choose Username")
-            new_password = st.text_input("Choose Password", type="password")
-            confirm_password = st.text_input("Confirm Password", type="password")
-            email = st.text_input("Email")
-            name = st.text_input("Full Name")
-            location = st.text_input("Location")
-            
-            submit_register = st.form_submit_button("Register", use_container_width=True)
-            
-            if submit_register:
-                if new_password != confirm_password:
-                    st.error("Passwords do not match!")
-                elif not all([new_username, new_password, email, name, location]):
-                    st.error("All fields are required!")
-                else:
-                    db = connect_to_mongodb()
-                    if db and create_user(db, new_username, new_password, email, name, location):
-                        st.success("Registration successful! Please login.")
-                        time.sleep(2)
-                        st.rerun()
+# Load custom CSS
+st.markdown(load_css(), unsafe_allow_html=True)
 
 # Initialize session state
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'username' not in st.session_state:
-    st.session_state.username = ''
+if 'current_page' not in st.session_state:
+    st.session_state.current_page = 'dashboard'
 
-def main():
-    # Page configuration
-    st.set_page_config(
-        page_title="Smart Crop Recommendation System",
-        page_icon="🌾",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
+# Initialize model variables
+model = None
+scaler = None
 
-    # Your existing CSS styles here
-    st.markdown("""
-        <style>
-        .main {
-            background: linear-gradient(135deg, #E8F5E9 0%, #C8E6C9 100%);
-            padding: 2rem;
-        }
-        .stButton>button {
-            background: linear-gradient(45deg, #2E7D32, #43A047);
-            color: white;
-            width: 100%;
-            font-weight: bold;
-            padding: 15px;
-            border-radius: 10px;
-            border: none;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin: 10px 0;
-        }
-        .stButton>button:hover {
-            background: linear-gradient(45deg, #43A047, #2E7D32);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        }
-        .stMetric {
-            background: linear-gradient(135deg, #ffffff, #f8f9fa);
-            padding: 20px;
-            border-radius: 15px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-            transition: all 0.3s ease;
-            border: 1px solid #e0e0e0;
-            margin: 10px 0;
-        }
-        .stMetric:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
-        }
-        .css-1d391kg {
-            padding: 2rem 1rem;
-        }
-        .stSelectbox {
-            background-color: #ffffff;
-            border-radius: 8px;
-            padding: 5px;
-            border: 1px solid #e0e0e0;
-            margin: 10px 0;
-        }
-        h1 {
-            color: #1B5E20;
-            text-align: center;
-            padding: 1rem;
-            border-bottom: 2px solid #4CAF50;
-            margin-bottom: 2rem;
-            font-size: 2.5rem;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
-        }
-        .stSubheader {
-            color: #2E7D32;
-            font-weight: bold;
-            border-left: 4px solid #4CAF50;
-            padding-left: 10px;
-            margin: 20px 0;
-        }
-        .stProgress > div > div {
-            background-color: #4CAF50;
-        }
-        .stTab {
-            background-color: #E8F5E9;
-            padding: 15px;
-            border-radius: 10px;
-            margin: 10px 0;
-        }
-        .css-1v0mbdj.etr89bj1 {
-            border-radius: 10px;
-            padding: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        </style>
-    """, unsafe_allow_html=True)
+# Load model and scaler files
+try:
+    model = pickle.load(open('crop_model.pkl', 'rb'))
+    scaler = pickle.load(open('scaler.pkl', 'rb'))
+except FileNotFoundError as e:
+    st.error(f"Required model files not found: {e}")
+except Exception as e:
+    st.error(f"Error loading model: {e}")
 
-    # Enhanced Sidebar with better styling and more features
-    with st.sidebar:
-        st.image("https://img.freepik.com/free-vector/farm-logo_23-2147503611.jpg", width=200)
-        st.title("🌿 Smart Farming")
-        
-        # Enhanced user profile section
-        with st.expander("👤 Farmer Profile", expanded=True):
-            st.write(f"Welcome, {st.session_state.username}!")
-            st.progress(100)
-            st.text(f"Last Login: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+def get_forecast(location):
+    """Get 5-day weather forecast for a location"""
+    try:
+        api_key = os.getenv("OPENWEATHERMAP_API_KEY")
+        if not api_key:
+            st.error("OpenWeatherMap API key not found. Please check your environment variables.")
+            return None
             
-            # Add farmer details
-            farmer_details = {
-                'farmer1': {
-                    'name': 'John Smith',
-                    'location': 'Karnataka',
-                    'farm_size': '5 acres',
-                    'farming_type': 'Organic'
+        base_url = "http://api.openweathermap.org/data/2.5/forecast"
+        params = {
+            'q': location,
+            'appid': api_key,
+            'units': 'metric'
+        }
+        
+        response = requests.get(base_url, params=params)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Error fetching forecast data: {response.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return None
+
+def get_weather(location):
+    """Get current weather data for a location"""
+    try:
+        api_key = os.getenv("OPENWEATHERMAP_API_KEY")
+        if not api_key:
+            st.error("OpenWeatherMap API key not found. Please check your environment variables.")
+            return None
+            
+        base_url = "http://api.openweathermap.org/data/2.5/weather"
+        params = {
+            'q': location,
+            'appid': api_key,
+            'units': 'metric'
+        }
+        
+        response = requests.get(base_url, params=params)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Error fetching weather data: {response.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return None
+
+# Initialize model variables
+model = None
+scaler = None
+
+# Load model and scaler files
+try:
+    model = pickle.load(open('crop_model.pkl', 'rb'))
+    scaler = pickle.load(open('scaler.pkl', 'rb'))
+except FileNotFoundError as e:
+    st.error(f"Required model files not found: {e}")
+except Exception as e:
+    st.error(f"Error loading model: {e}")
+
+def predict_crop(soil_data):
+    try:
+        if model is None or scaler is None:
+            st.error("Model or scaler not loaded properly")
+            return None, None
+            
+        # Scale the input data
+        scaled_data = scaler.transform([soil_data])
+        
+        # Make prediction
+        prediction = model.predict(scaled_data)
+        probabilities = model.predict_proba(scaled_data)
+        
+        return prediction[0], probabilities[0]
+    except Exception as e:
+        st.error(f"Error in prediction: {e}")
+        return None, None
+
+# Add this crops_info dictionary before the show_main_page function
+crops_info = {
+    "Rice": """
+    - Optimal growing temperature: 20-35°C
+    - Requires standing water for most of its growth
+    - High water requirement: 1000-2000mm per season
+    - Prefers clay or clay loam soils
+    - Growing season: 100-150 days
+    """,
+    
+    "Wheat": """
+    - Optimal growing temperature: 15-25°C
+    - Moderate water requirement
+    - Well-drained loamy soil preferred
+    - Growing season: 120-150 days
+    - Sensitive to high humidity
+    """,
+    
+    "Maize": """
+    - Optimal growing temperature: 20-30°C
+    - Requires well-distributed rainfall
+    - Deep, well-drained soils preferred
+    - Growing season: 90-140 days
+    - High nutrient requirement
+    """,
+    
+    "Cotton": """
+    - Optimal growing temperature: 21-30°C
+    - Drought tolerant but sensitive to waterlogging
+    - Deep, well-drained black soils preferred
+    - Growing season: 150-180 days
+    - High nutrient requirement
+    """,
+    
+    "Sugarcane": """
+    - Optimal growing temperature: 21-27°C
+    - High water requirement
+    - Deep, well-drained soils preferred
+    - Growing season: 12-18 months
+    - Requires good soil fertility
+    """,
+    
+    "Potato": """
+    - Optimal growing temperature: 15-25°C
+    - Moderate water requirement
+    - Well-drained, loose soil preferred
+    - Growing season: 90-120 days
+    - Sensitive to frost
+    """,
+    
+    "Tomato": """
+    - Optimal growing temperature: 20-27°C
+    - Regular water requirement
+    - Well-drained, rich soil preferred
+    - Growing season: 90-150 days
+    - Sensitive to frost and high humidity
+    """,
+    
+    "Soybean": """
+    - Optimal growing temperature: 20-30°C
+    - Moderate water requirement
+    - Well-drained, fertile soil preferred
+    - Growing season: 100-120 days
+    - Good nitrogen fixing ability
+    """
+}
+
+def show_main_page():
+    # Main header with modern styling
+    st.markdown("""
+        <div class="glass-card" style="text-align: center; margin-bottom: 2rem;">
+            <h1 class="gradient-text" style="font-size: 3em; margin: 0;">
+                🌿 Smart Farming Assistant
+            </h1>
+            <p style="color: #81C784; margin-top: 0.5rem;">
+                AI-Powered Crop Recommendations & Weather Analysis
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+      # Main Grid Layout
+    st.markdown("""
+        <div class="grid-container">
+            <div class="glass-card">
+                <h2 class="gradient-text">🌾 Crop Prediction</h2>
+                <div class="modern-form">
+    """, unsafe_allow_html=True)
+    
+    # Crop Prediction Section
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        with st.form("prediction_form", clear_on_submit=True):
+            st.markdown("""
+                <h3 style="color: #81C784; margin-bottom: 1rem;">
+                    📊 Soil and Environmental Parameters
+                </h3>
+            """, unsafe_allow_html=True)
+            
+            col3, col4 = st.columns(2)
+            with col3:
+                nitrogen = st.number_input("Nitrogen (N)", 0, 140, 50, help="Soil nitrogen content in mg/kg")
+                phosphorus = st.number_input("Phosphorus (P)", 0, 140, 50, help="Soil phosphorus content in mg/kg")
+                potassium = st.number_input("Potassium (K)", 0, 200, 50, help="Soil potassium content in mg/kg")
+                temperature = st.number_input("Temperature (°C)", 0.0, 50.0, 25.0)
+            
+            with col4:
+                humidity = st.number_input("Humidity (%)", 0.0, 100.0, 50.0)
+                ph = st.number_input("pH", 0.0, 14.0, 7.0)
+                rainfall = st.number_input("Rainfall (mm)", 0.0, 300.0, 100.0)
+            
+            predict_button = st.form_submit_button("🔍 Predict Best Crop")
+            
+            if predict_button:
+                input_data = [nitrogen, phosphorus, potassium, temperature, humidity, ph, rainfall]
+                prediction, probabilities = predict_crop(input_data)
+                if prediction is not None:
+                    st.session_state.prediction = prediction
+                    st.session_state.probabilities = probabilities
+                    st.rerun()
+
+    with col2:
+        st.header("📊 Prediction Results")
+        if 'prediction' in st.session_state and 'probabilities' in st.session_state:
+            # Display prediction results with enhanced styling
+            st.markdown("""
+                <div style='background: rgba(255, 255, 255, 0.1);
+                          backdrop-filter: blur(10px);
+                          padding: 2rem;
+                          border-radius: 20px;
+                          border: 1px solid rgba(255, 255, 255, 0.1);
+                          margin: 1rem 0;
+                          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);'>
+                    <h2 style='color: #4CAF50; margin: 0; text-align: center;
+                             font-size: 2em; margin-bottom: 1rem;'>
+                        Recommended Crop
+                    </h2>
+                    <h1 style='color: #ffffff; margin: 0; text-align: center;
+                             font-size: 3em; margin-bottom: 1rem;
+                             background: linear-gradient(45deg, #4CAF50, #81C784);
+                             -webkit-background-clip: text;
+                             -webkit-text-fill-color: transparent;'>
+                        {prediction}
+                    </h1>
+                    <div style='background: rgba(255, 255, 255, 0.05);
+                              padding: 1rem;
+                              border-radius: 10px;
+                              margin-top: 1rem;'>
+                        <p style='color: #ffffff; margin: 0; text-align: center;'>
+                            Confidence Score: {confidence:.1%}
+                        </p>
+                    </div>
+                </div>
+            """.format(
+                prediction=st.session_state.prediction.upper(),
+                confidence=max(st.session_state.probabilities)
+            ), unsafe_allow_html=True)
+
+            # Confidence Scores
+            st.subheader("Prediction Confidence")
+            probabilities = st.session_state.probabilities
+            crop_labels = ["rice", "wheat", "maize", "cotton", "sugarcane", "potato", "tomato", "soybean"]
+            
+            # Create DataFrame with formatted probabilities
+            prob_df = pd.DataFrame({
+                'Crop': crop_labels[:len(probabilities)],
+                'Confidence': probabilities
+            })
+            prob_df = prob_df.sort_values('Confidence', ascending=False)
+            
+            # Display top 3 recommendations with confidence scores
+            st.markdown("### Top Recommendations")
+            for idx, row in prob_df.head(3).iterrows():
+                confidence_percentage = row['Confidence'] * 100
+                
+                st.markdown(f"""
+                    <div class='card' style='
+                              padding: 15px 20px;
+                              margin: 10px 0;
+                              border-left: 4px solid {'#4CAF50' if idx == 0 else '#81C784'};'>
+                        <div style='display: flex; justify-content: space-between; align-items: center;'>
+                            <span style='color: #ffffff; font-weight: bold; font-size: 1.1em;'>{row['Crop'].title()}</span>
+                            <span style='color: #4CAF50; background: rgba(76, 175, 80, 0.1); 
+                                       padding: 4px 10px; border-radius: 15px;'>
+                                {confidence_percentage:.1f}%
+                            </span>
+                        </div>
+                        <div style='background: rgba(255, 255, 255, 0.1); 
+                                  border-radius: 10px; 
+                                  margin-top: 10px;
+                                  overflow: hidden;'>
+                            <div style='background: linear-gradient(45deg, #4CAF50, #81C784); 
+                                      width: {confidence_percentage}%; 
+                                      height: 6px; 
+                                      border-radius: 10px;
+                                      transition: width 0.3s ease;'></div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            
+            # Display full confidence distribution chart
+            st.markdown("### Confidence Distribution")
+            chart = st.bar_chart(prob_df.set_index('Crop')['Confidence'],
+                               use_container_width=True)
+            
+            # Add crop information for the predicted crop
+            st.markdown("### Crop Information")
+            crop_info = {
+                "rice": {
+                    "season": "Kharif",
+                    "water_req": "High",
+                    "temp_range": "20-35°C",
+                    "soil_type": "Clay or clay loam"
                 },
-                'farmer2': {
-                    'name': 'Mary Johnson',
-                    'location': 'Maharashtra',
-                    'farm_size': '8 acres',
-                    'farming_type': 'Traditional'
+                "wheat": {
+                    "season": "Rabi",
+                    "water_req": "Moderate",
+                    "temp_range": "15-25°C",
+                    "soil_type": "Well-drained loam"
+                },
+                "maize": {
+                    "season": "Kharif/Rabi",
+                    "water_req": "Moderate",
+                    "temp_range": "20-30°C",
+                    "soil_type": "Well-drained loamy"
+                },
+                "cotton": {
+                    "season": "Kharif",
+                    "water_req": "Moderate",
+                    "temp_range": "21-30°C",
+                    "soil_type": "Black soil"
+                },
+                "sugarcane": {
+                    "season": "Year-round",
+                    "water_req": "High",
+                    "temp_range": "21-27°C",
+                    "soil_type": "Deep loam"
+                },
+                "potato": {
+                    "season": "Rabi",
+                    "water_req": "Moderate",
+                    "temp_range": "15-25°C",
+                    "soil_type": "Sandy loam"
+                },
+                "tomato": {
+                    "season": "Year-round",
+                    "water_req": "Moderate",
+                    "temp_range": "20-27°C",
+                    "soil_type": "Rich loam"
+                },
+                "soybean": {
+                    "season": "Kharif",
+                    "water_req": "Moderate",
+                    "temp_range": "20-30°C",
+                    "soil_type": "Well-drained loam"
                 }
             }
             
-            if st.session_state.username in farmer_details:
-                details = farmer_details[st.session_state.username]
-                st.write("**Farmer Details:**")
-                for key, value in details.items():
-                    st.text(f"{key.replace('_', ' ').title()}: {value}")
-            
-            if st.button("Logout"):
-                st.session_state.logged_in = False
-                st.session_state.username = ''
-                st.rerun()  # Updated from experimental_rerun()
+            predicted_crop = st.session_state.prediction.lower()
+            if predicted_crop in crop_info:
+                info = crop_info[predicted_crop]
+                st.markdown(f"""
+                    <div style='background-color: rgba(255, 255, 255, 0.9);
+                              padding: 20px;
+                              border-radius: 15px;
+                              margin-top: 15px;
+                              box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);'>
+                        <h4 style='color: #2E7D32; margin-top: 0;'>Optimal Growing Conditions</h4>
+                        <table style='width: 100%;'>
+                            <tr>
+                                <td style='padding: 8px; color: #1B5E20;'>🌱 Growing Season</td>
+                                <td>{info['season']}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px; color: #1B5E20;'>💧 Water Requirement</td>
+                                <td>{info['water_req']}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px; color: #1B5E20;'>🌡️ Temperature Range</td>
+                                <td>{info['temp_range']}</td>
+                            </tr>
+                            <tr>
+                                <td style='padding: 8px; color: #1B5E20;'>🌍 Ideal Soil Type</td>
+                                <td>{info['soil_type']}</td>
+                            </tr>
+                        </table>
+                    </div>
+                """, unsafe_allow_html=True)    # Weather Information Section with modern layout
+    st.markdown("""
+        <div class="glass-card">
+            <h2 class="gradient-text" style="margin-bottom: 1.5rem;">
+                🌤️ Weather Information
+            </h2>
+            <div class="weather-section">
+    """, unsafe_allow_html=True)
+    
+    location = st.text_input("Enter Location", placeholder="Enter city name...", key="weather_location")
+    
+    if location:
+        col1, col2 = st.columns(2)
+        with col1:
+            weather_data = get_weather(location)
+            if weather_data:
+                temp = weather_data['main']['temp']
+                humidity = weather_data['main']['humidity']
+                wind_speed = weather_data['wind']['speed']
+                description = weather_data['weather'][0]['description']
+                
+                st.markdown(f"""
+                    <div class="weather-card">
+                        <h3 style="color: #4CAF50; margin-top: 0;">Current Weather</h3>
+                        <div class="grid-container" style="gap: 1rem;">
+                            <div class="metric-card">
+                                <p style="color: #81C784; margin: 0;">Temperature</p>
+                                <h2 style="margin: 0.5rem 0; color: white;">{temp}°C</h2>
+                            </div>
+                            <div class="metric-card">
+                                <p style="color: #81C784; margin: 0;">Humidity</p>
+                                <h2 style="margin: 0.5rem 0; color: white;">{humidity}%</h2>
+                            </div>
+                        </div>
+                        <div class="metric-card" style="margin-top: 1rem;">
+                            <p style="color: #81C784; margin: 0;">Wind Speed</p>
+                            <h2 style="margin: 0.5rem 0; color: white;">{wind_speed} m/s</h2>
+                        </div>
+                        <div class="metric-card" style="margin-top: 1rem;">
+                            <p style="color: #81C784; margin: 0;">Condition</p>
+                            <h3 style="margin: 0.5rem 0; color: white;">{description.capitalize()}</h3>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
 
-        # Weather widget in sidebar
-        with st.expander("🌤️ Weather Updates", expanded=True):
-            st.metric("Temperature", "25°C", "1.2°C")
-            st.metric("Humidity", "65%", "-5%")
-            st.metric("Rainfall Chance", "30%", "10%")
+        with col2:
+            st.markdown("""
+                <h3 class="gradient-text" style="margin-bottom: 1rem;">5-Day Forecast</h3>
+            """, unsafe_allow_html=True)
+            
+            forecast_data = get_forecast(location)
+            if forecast_data and 'list' in forecast_data:
+                # Process and display forecast
+                forecasts = {}
+                for item in forecast_data['list']:
+                    date = datetime.fromtimestamp(item['dt']).strftime('%Y-%m-%d')
+                    if date not in forecasts:
+                        forecasts[date] = {
+                            'temp': item['main']['temp'],
+                            'humidity': item['main']['humidity'],
+                            'description': item['weather'][0]['description']
+                        }
+                
+                for date, data in list(forecasts.items())[:5]:
+                    st.markdown(f"""
+                        <div class="weather-card" style="margin-bottom: 0.5rem;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <strong style="color: #4CAF50;">{date}</strong>
+                                <span style="color: white;">{data['temp']}°C</span>
+                            </div>
+                            <div style="margin-top: 0.5rem;">
+                                <span style="color: #81C784;">Humidity: {data['humidity']}%</span><br>
+                                <span style="color: white;">{data['description'].capitalize()}</span>
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+    
+    st.markdown("</div></div>", unsafe_allow_html=True)
+    # Replace the weather information section with this enhanced version
+    if location:
+        col5, col6 = st.columns(2)
+        with col5:
+            st.markdown("""
+                <div class="weather-card">
+                    <h3 style="color: white; margin-top: 0;">Current Weather</h3>
+            """, unsafe_allow_html=True)
+            def get_weather(location):
+                """Get current weather data for a location"""
+                try:
+                    api_key = os.getenv("OPENWEATHERMAP_API_KEY")
+                    if not api_key:
+                        st.error("OpenWeatherMap API key not found. Please check your environment variables.")
+                        return None
+                        
+                    base_url = "http://api.openweathermap.org/data/2.5/weather"
+                    params = {
+                        'q': location,
+                        'appid': api_key,
+                        'units': 'metric'
+                    }
+                    
+                    response = requests.get(base_url, params=params)
+                    if response.status_code == 200:
+                        return response.json()
+                    else:
+                        st.error(f"Error fetching weather data: {response.status_code}")
+                        return None
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+                    return None
+            
+            weather_data = get_weather(location)
+            if weather_data:
+                temp = weather_data['main']['temp']
+                humidity = weather_data['main']['humidity']
+                wind_speed = weather_data['wind']['speed']
+                description = weather_data['weather'][0]['description']
+                
+                # Weather display with modern cards
+                st.markdown(f"""
+                    <div class='card'>
+                        <h3 style='color: #4CAF50; margin-top: 0;'>Current Weather</h3>
+                        <div style='display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;'>
+                            <div class='metric-container'>
+                                <p style='color: #81C784; margin: 0;'>Temperature</p>
+                                <h2 style='margin: 0.5rem 0;'>{temp}°C</h2>
+                            </div>
+                            <div class='metric-container'>
+                                <p style='color: #81C784; margin: 0;'>Humidity</p>
+                                <h2 style='margin: 0.5rem 0;'>{humidity}%</h2>
+                            </div>
+                        </div>
+                        <div class='metric-container' style='margin-top: 1rem;'>
+                            <p style='color: #81C784; margin: 0;'>Wind Speed</p>
+                            <h2 style='margin: 0.5rem 0;'>{wind_speed} m/s</h2>
+                        </div>
+                        <p style='color: white; margin-top: 1rem;'>
+                            Condition: {description.capitalize()}
+                        </p>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+            st.subheader("5-Day Forecast")
+            forecast_data = get_forecast(location)
+            if forecast_data:
+                forecasts = {}
+                for item in forecast_data['list']:
+                    date = datetime.fromtimestamp(item['dt']).strftime('%Y-%m-%d')
+                    if date not in forecasts:
+                        forecasts[date] = {
+                            'temp': item['main']['temp'],
+                            'humidity': item['main']['humidity'],
+                            'description': item['weather'][0]['description']
+                        }
+                
+                for date, data in list(forecasts.items())[:5]:
+                    st.write(f"**{date}**")
+                    st.write(f"Temp: {data['temp']}°C")
+                    st.write(f"Humidity: {data['humidity']}%")
+                    st.write(f"Condition: {data['description'].capitalize()}")
+                    st.write("---")
+
+    # Knowledge Base Section with improved styling
+    st.markdown("""
+        <hr style='margin: 2rem 0;'>
+        <h2 style='color: #2E7D32;'>📚 Knowledge Base</h2>
+    """, unsafe_allow_html=True)
+    knowledge_type = st.selectbox(
+        "Select Topic",
+        ["Crop Information", "Soil Management", "Pest Control", "Farming Tips"]
+    )
+    
+    # Replace the knowledge base display with this enhanced version
+    if knowledge_type == "Crop Information":
+        for crop, info in crops_info.items():
+            st.markdown(f"""
+                <div class="knowledge-card" style="
+                    background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+                    padding: 20px;
+                    border-radius: 15px;
+                    margin: 15px 0;
+                    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+                    border-left: 5px solid #4CAF50;
+                    backdrop-filter: blur(10px);
+                    transition: all 0.3s ease;">
+                    <h4 style="color: #2E7D32; margin-top: 0; font-size: 1.4em;">{crop}</h4>
+                    <div style="color: #333; line-height: 1.6;">{info}</div>
+                </div>
+            """, unsafe_allow_html=True)
         
-        # Enhanced navigation
-        page = st.radio("📍 Navigation",
-            ["🎯 Prediction", "📊 Analysis", "📚 Knowledge Base", "🌱 Crop Calendar", "❓ Help", "📱 Contact"],
-            help="Choose a section to navigate"
+    elif knowledge_type == "Soil Management":
+        st.subheader("🌍 Soil Health Management")
+        st.markdown("""
+        **1. Soil Testing**
+        - Regular soil testing is crucial
+        - Monitor pH levels
+        - Check nutrient content (N, P, K)
+        
+        **2. Soil Improvement**
+        - Add organic matter
+        - Practice crop rotation
+        - Use appropriate fertilizers
+        
+        **3. Conservation Practices**
+        - Minimize tillage
+        - Use cover crops
+        - Prevent soil erosion
+        """)
+        
+    elif knowledge_type == "Pest Control":
+        st.subheader("🐛 Integrated Pest Management")
+        st.markdown("""
+        **Common Pests and Solutions:**
+        
+        1. **Aphids**
+        - Use neem oil spray
+        - Introduce ladybugs
+        - Remove affected leaves
+        
+        2. **Caterpillars**
+        - Handpick when possible
+        - Use Bt (Bacillus thuringiensis)
+        - Install bird houses
+        
+        3. **Root Rot**
+        - Improve drainage
+        - Avoid overwatering
+        - Use resistant varieties
+        """)
+        
+    elif knowledge_type == "Agronomic Management":
+        st.subheader("🚜 Agronomic & Management Features")
+        st.markdown("""
+        **Key Management Practices:**
+
+        1. **Previous Crop**
+        - Crop rotation patterns affect soil nutrients
+        - Helps break pest and disease cycles
+        - Improves soil structure and fertility
+        - Optimizes nutrient utilization
+
+        2. **Sowing Date**
+        - Impacts crop duration and exposure to weather
+        - Determines growing season length
+        - Affects crop development stages
+        - Influences pest and disease risks
+
+        3. **Fertilizer Usage**
+        - Quantity and type (NPK, organic, etc.)
+        - Application timing and methods
+        - Balanced nutrient management
+        - Cost-effective fertilization strategies
+
+        4. **Irrigation Type and Frequency**
+        - Drip, sprinkler, flood irrigation options
+        - Water scheduling based on crop stage
+        - Moisture monitoring techniques
+        - Water conservation practices
+
+        5. **Pesticide/Herbicide Usage**
+        - Can influence crop yield and health
+        - Integrated pest management (IPM)
+        - Safe application methods
+        - Environmental considerations
+
+        6. **Seed Variety**
+        - Genetically improved seeds may perform better
+        - Disease resistance characteristics
+        - Climate adaptability
+        - Yield potential assessment
+        """)
+    
+    elif knowledge_type == "Farming Tips":
+        st.markdown("""
+            <div style="background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+                      padding: 25px;
+                      border-radius: 15px;
+                      margin: 15px 0;
+                      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+                      border-left: 5px solid #4CAF50;">
+                <h3 style="color: #2E7D32; margin-top: 0;">🌱 Seasonal Farming Tips</h3>
+                
+                <h4 style="color: #1B5E20; margin-top: 20px;">1. Pre-Planting</h4>
+                <ul style="color: #333; line-height: 1.6;">
+                    <li>Test soil quality and pH levels</li>
+                    <li>Prepare land with proper tillage</li>
+                    <li>Plan crop rotation schedule</li>
+                    <li>Select appropriate seeds for the season</li>
+                </ul>
+                
+                <h4 style="color: #1B5E20; margin-top: 20px;">2. During Growing Season</h4>
+                <ul style="color: #333; line-height: 1.6;">
+                    <li>Monitor water requirements regularly</li>
+                    <li>Implement proper fertilization schedule</li>
+                    <li>Watch for pest and disease signs</li>
+                    <li>Maintain proper spacing between plants</li>
+                </ul>
+                
+                <h4 style="color: #1B5E20; margin-top: 20px;">3. Harvest and Post-Harvest</h4>
+                <ul style="color: #333; line-height: 1.6;">
+                    <li>Harvest at optimal maturity</li>
+                    <li>Proper storage of harvested crops</li>
+                    <li>Maintain cleanliness in storage areas</li>
+                    <li>Monitor moisture levels in storage</li>
+                </ul>
+                
+                <h4 style="color: #1B5E20; margin-top: 20px;">4. Sustainable Practices</h4>
+                <ul style="color: #333; line-height: 1.6;">
+                    <li>Use organic fertilizers when possible</li>
+                    <li>Practice water conservation</li>
+                    <li>Implement integrated pest management</li>
+                    <li>Maintain soil health through mulching</li>
+                </ul>
+            </div>
+            
+            <div style="background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(255,255,255,0.85));
+                      padding: 25px;
+                      border-radius: 15px;
+                      margin: 15px 0;
+                      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+                      border-left: 5px solid #4CAF50;">
+                <h3 style="color: #2E7D32; margin-top: 0;">🔍 Best Practices</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 12px; color: #1B5E20; font-weight: bold;">Soil Management</td>
+                        <td style="padding: 12px;">Regular testing, proper drainage, organic matter addition</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px; color: #1B5E20; font-weight: bold;">Water Management</td>
+                        <td style="padding: 12px;">Drip irrigation, rainwater harvesting, moisture monitoring</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px; color: #1B5E20; font-weight: bold;">Pest Control</td>
+                        <td style="padding: 12px;">Natural predators, crop rotation, resistant varieties</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 12px; color: #1B5E20; font-weight: bold;">Resource Optimization</td>
+                        <td style="padding: 12px;">Efficient use of water, fertilizers, and labor</td>
+                    </tr>
+                </table>
+            </div>
+        """, unsafe_allow_html=True)
+        
+    elif knowledge_type == "Farming Tips":
+        st.title("📈 Reports")
+        
+        # Model Performance Section
+        st.header("📈 Model Performance")
+        col5, col6, col7 = st.columns(3)
+        with col5:
+            st.metric("Model Accuracy", "94.2%", "1.2%")
+        with col6:
+            st.metric("Precision", "92.8%", "0.8%")
+        with col7:
+            st.metric("Recall", "93.5%", "0.5%")
+        
+        # Historical Analysis Section
+        st.header("📊 Historical Analysis")
+        
+        # Create sample historical data with consistent column names
+        dates = pd.date_range(start='2023-01-01', end='2023-12-31', freq='M')
+        historical_data = pd.DataFrame({
+            'Date': dates,
+            'Prediction_Accuracy': np.random.uniform(0.90, 0.95, len(dates)),  # Match the column name used in the chart
+            'Number_of_Predictions': np.random.randint(50, 150, len(dates))
+        })
+        
+        col10, col11 = st.columns(2)
+        
+        with col10:
+            st.subheader("📈 Prediction History")
+            # Create accuracy trend chart with proper column name
+            accuracy_chart = historical_data.set_index('Date')['Prediction_Accuracy']
+            st.line_chart(accuracy_chart)
+            
+        with col11:
+            st.subheader("🌱 Crop Distribution")
+            # Sample crop distribution data
+            crops = ['Rice', 'Wheat', 'Maize', 'Cotton', 'Sugarcane']
+            values = [30, 25, 20, 15, 10]
+            crop_dist = pd.DataFrame({
+                'Crop': crops,
+                'Percentage': values
+            })
+            st.bar_chart(crop_dist.set_index('Crop'))
+        # Display historical data with tabs
+        tab1, tab2 = st.tabs(["📈 Prediction History", "🌱 Crop Distribution"])
+        
+        with tab1:
+            st.subheader("Prediction Accuracy Trend")
+            st.line_chart(historical_data.set_index('Date')['Prediction Accuracy'])
+            st.dataframe(historical_data, hide_index=True)
+            
+        with tab2:
+            st.subheader("Crop Distribution")
+            crop_counts = historical_data['Crop'].value_counts()
+            st.bar_chart(crop_counts)
+            
+        # Export functionality
+        st.download_button(
+            label="📥 Download Report Data",
+            data=historical_data.to_csv(index=False),
+            file_name="crop_prediction_report.csv",
+            mime="text/csv"
         )
 
-    # Page routing with enhanced content
-    if page == "🎯 Prediction":
-        show_prediction_page()
-    elif page == "📊 Analysis":
-        show_analysis_page()
-    elif page == "📚 Knowledge Base":
-        show_knowledge_base()
-    elif page == "🌱 Crop Calendar":
-        show_crop_calendar()
-    elif page == "📱 Contact":
-        show_contact_page()
-    else:
-        show_help_page()
-
-def show_knowledge_base():
-    st.title("📚 Agricultural Knowledge Base")
-    
-    tab1, tab2, tab3 = st.tabs(["🌱 Crop Guide", "🌡️ Climate Impact", "💧 Water Management"])
-    
-    with tab1:
-        st.subheader("Comprehensive Crop Guide")
-        crop_info = {
-            "Rice": {
-                "season": "Kharif",
-                "water_req": "High",
-                "soil_type": "Clay",
-                "duration": "120-150 days",
-                "fertilizer": "NPK 120:60:60"
-            },
-            "Wheat": {
-                "season": "Rabi",
-                "water_req": "Medium",
-                "soil_type": "Loamy",
-                "duration": "120-150 days",
-                "fertilizer": "NPK 120:60:40"
-            }
-        }
-        selected_crop = st.selectbox("Select Crop", list(crop_info.keys()))
-        if selected_crop:
-            st.json(crop_info[selected_crop])
-            
-    with tab2:
-        st.subheader("Climate Impact Analysis")
-        climate_data = pd.DataFrame({
-            'Temperature': ['Low', 'Medium', 'High'],
-            'Impact': [-20, 0, -30]
-        })
-        fig = px.bar(climate_data, x='Temperature', y='Impact',
-                    title='Temperature Impact on Crop Yield')
-        st.plotly_chart(fig)
-
-def show_crop_calendar():
-    st.title("🌱 Seasonal Crop Calendar")
-    
-    seasons = {
-        "Kharif": ["Rice", "Maize", "Soybean", "Cotton"],
-        "Rabi": ["Wheat", "Barley", "Peas", "Mustard"],
-        "Zaid": ["Watermelon", "Muskmelon", "Cucumber"]
-    }
-    
-    current_month = datetime.now().strftime("%B")
-    st.subheader(f"Current Month: {current_month}")
-    
-    for season, crops in seasons.items():
-        with st.expander(f"🗓️ {season} Season Crops"):
-            st.write(f"**Recommended Crops:** {', '.join(crops)}")
-            
-            # Add planting schedule
-            schedule_df = pd.DataFrame({
-                'Crop': crops,
-                'Planting Time': ['Early Season'] * len(crops),
-                'Harvest Time': ['Late Season'] * len(crops)
-            })
-            st.table(schedule_df)
-
-def show_prediction_page():
-    st.title("🌾 Smart Crop Recommendation System")
-    st.write("Enter soil parameters and environmental conditions to get crop recommendations")
-    
-    # Create three columns for better layout
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.subheader("📊 Soil Nutrients")
-        N = st.number_input("Nitrogen (N) content", 0, 140, 90)
-        P = st.number_input("Phosphorus (P) content", 5, 145, 42)
-        K = st.number_input("Potassium (K) content", 5, 205, 43)
-    
-    with col2:
-        st.subheader("🌡️ Environmental Factors")
-        temperature = st.slider("Temperature (°C)", 0.0, 45.0, 20.87)
-        humidity = st.slider("Humidity (%)", 0.0, 100.0, 82.0)
-        rainfall = st.number_input("Rainfall (mm)", 0.0, 300.0, 202.935)
-    
-    with col3:
-        st.subheader("🧪 Soil Properties")
-        ph = st.slider("pH value", 0.0, 14.0, 6.5)
-        soil_type = st.selectbox("Soil Type", ["Clay", "Sandy", "Loamy", "Black", "Red", "Alluvial"])
-        irrigation = st.selectbox("Irrigation Method", ["Drip", "Sprinkler", "Flood", "Furrow", "Manual"])
-
-    # Add predict button with spinner
-    if st.button("🔍 Predict Suitable Crop", use_container_width=True):
-        with st.spinner('Analyzing soil parameters...'):
-            try:
-                # Make prediction
-                crop, confidence = predict_crop(N, P, K, temperature, humidity, ph, rainfall)
-                
-                # Display results
-                st.success("### 🎯 Prediction Results")
-                
-                # Results in columns
-                col4, col5 = st.columns(2)
-                with col4:
-                    st.metric("Recommended Crop", crop)
-                    st.metric("Soil Health", "Good" if ph > 6.0 and ph < 7.5 else "Needs Attention")
-                with col5:
-                    st.metric("Prediction Confidence", f"{confidence:.2%}")
-                    
-                # Display recommendations
-                st.info("### 🌱 Key Recommendations")
-                st.write(f"""
-                - Irrigation Schedule: {get_irrigation_schedule(crop)}
-                - Best Planting Time: {get_planting_season(crop)}
-                """)
-                
-            except Exception as e:
-                st.error(f"⚠️ Error: {str(e)}")
-
-def show_analysis_page():
-    st.title("📈 Crop Analysis Dashboard")
-    
-    # Add tabs for different analyses
-    tab1, tab2, tab3 = st.tabs(["Yield Analysis", "Cost Analysis", "Market Trends"])
-    
-    with tab1:
-        st.subheader("📊 Crop Yield Trends")
-        yield_data = pd.DataFrame({
-            'Year': [2018, 2019, 2020, 2021, 2022],
-            'Yield': [75, 82, 85, 89, 92]
-        })
-        st.line_chart(yield_data.set_index('Year'))
-
-    with tab2:
-        st.subheader("💰 Cost Breakdown")
-        cost_data = pd.DataFrame({
-            'Category': ['Seeds', 'Fertilizers', 'Labor', 'Equipment'],
-            'Cost': [2000, 3000, 4000, 1000]
-        })
-        fig = px.pie(cost_data, values='Cost', names='Category')
-        st.plotly_chart(fig)
+        st.dataframe(historical_data)
         
-    with tab3:
-        st.subheader("📈 Market Price Trends")
-        st.info("Coming soon: Real-time market price analysis")
+        # Visualization
+        st.line_chart(historical_data.set_index('Date')['Accuracy'])
 
-def show_contact_page():
-    st.title("📱 Contact & Support")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("### 📬 Get in Touch")
-        name = st.text_input("Name")
-        email = st.text_input("Email")
-        message = st.text_area("Message")
-        if st.button("Send Message"):
-            st.success("Message sent successfully!")
-    
-    with col2:
-        st.write("### 📞 Help Desk")
-        st.info("""
-        **24/7 Support**
-        - Email: support@smartfarm.com
-        - Phone: +1-234-567-8900
-        - Chat: Available 9 AM - 5 PM
-        """)
-
-def show_help_page():
-    st.title("❓ Help & Guidelines")
-    st.write("Learn how to use the system effectively")
-    
-    with st.expander("📖 How to Use"):
-        st.write("""
-        1. Enter your soil parameters (N, P, K values)
-        2. Input environmental conditions
-        3. Select soil type and irrigation method
-        4. Click predict to get recommendations
-        """)
-    
-    with st.expander("🎯 Understanding Results"):
-        st.write("""
-        - Confidence score indicates prediction reliability
-        - Soil health is based on pH levels
-        - Charts show nutrient balance analysis
-        """)
-
-def get_irrigation_schedule(crop):
-    # Placeholder function - replace with actual implementation
-    return "Every 2-3 days depending on weather conditions"
-
-def get_soil_recommendations(soil_type):
-    # Placeholder function - replace with actual implementation
-    return "Regular organic matter addition and proper drainage maintenance"
-
-def get_planting_season(crop):
-    # Placeholder function - replace with actual implementation
-    return "Early spring to late summer"
 
 if __name__ == "__main__":
-    main()
+    show_main_page()

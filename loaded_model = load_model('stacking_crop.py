@@ -1,0 +1,1 @@
+loaded_model = load_model('stacking_crop_model.pkl')

@@ -1,145 +1,309 @@
 import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, classification_report
+from sklearn.ensemble import StackingClassifier, RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GridSearchCV
-import joblib  # Added missing import
+import xgboost as xgb
+import joblib
+import logging
+from pathlib import Path
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import numpy as np
 
-# Load and prepare the dataset
-def load_data(filepath):
-    data = pd.read_csv(filepath)
-    X = data.drop('crop', axis=1)  # Assuming 'crop' is the target column
-    y = data['crop']
-    return X, y
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Create base models
-def create_base_models():
-    models = {
-        'rf': RandomForestClassifier(n_estimators=100, random_state=42),
-        'gb': GradientBoostingClassifier(n_estimators=100, random_state=42),
-        'svm': SVC(kernel='rbf', probability=True, random_state=42)
-    }
-    return models
-
-# Create stacking model
-class CropPredictor:
-    def __init__(self):
-        self.base_models = create_base_models()
-        self.meta_model = LogisticRegression(multi_class='ovr')  # Modified for multiclass
-        self.scaler = StandardScaler()
-        self.feature_importance = {}
+def prepare_data(data_path: str) -> tuple:
+    """
+    Load and prepare dataset for training.
     
-    def fit(self, X, y):
-        # Scale the features
-        X_scaled = self.scaler.fit_transform(X)
+    Args:
+        data_path (str): Path to the CSV file containing crop data
         
-        # Split the data
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_scaled, y, test_size=0.2, random_state=42
-        )
+    Returns:
+        tuple: (X, y, label_encoder) containing features, labels and the encoder
         
-        # Train base models and get predictions
-        meta_features = np.zeros((X_val.shape[0], len(self.base_models)))
-        
-        for i, (name, model) in enumerate(self.base_models.items()):
-            model.fit(X_train, y_train)
-            # Modified to handle multiclass predictions
-            proba = model.predict_proba(X_val)
-            meta_features[:, i] = np.mean(proba, axis=1)
-        
-        # Train meta model
-        self.meta_model.fit(meta_features, y_val)
-    
-    def predict(self, X):
-        X_scaled = self.scaler.transform(X)
-        meta_features = np.zeros((X_scaled.shape[0], len(self.base_models)))
-        
-        for i, (name, model) in enumerate(self.base_models.items()):
-            # Modified to handle multiclass predictions
-            proba = model.predict_proba(X_scaled)
-            meta_features[:, i] = np.mean(proba, axis=1)
-        
-        return self.meta_model.predict(meta_features)
-
-    def get_feature_importance(self, feature_names):
-        """Calculate feature importance from Random Forest model"""
-        rf_model = self.base_models['rf']
-        importances = rf_model.feature_importances_
-        self.feature_importance = dict(zip(feature_names, importances))
-        return self.feature_importance
-
-    def save_model(self, filepath):
-        """Save the trained model to disk"""
-        joblib.dump(self, filepath)
-
-    @staticmethod
-    def load_model(filepath):
-        """Load a trained model from disk"""
-        return joblib.load(filepath)
-
-    def tune_hyperparameters(self, X, y):
-        """Tune hyperparameters for base models"""
-        param_grid = {
-            'rf': {
-                'n_estimators': [50, 100, 200],
-                'max_depth': [None, 10, 20]
-            }
-        }
-        
-        for name, model in self.base_models.items():
-            if name in param_grid:
-                grid_search = GridSearchCV(model, param_grid[name], cv=5)
-                grid_search.fit(X, y)
-                self.base_models[name] = grid_search.best_estimator_
-
-# Main execution
-if __name__ == "__main__":
+    Raises:
+        FileNotFoundError: If the data file is not found
+        ValueError: If the data format is invalid
+    """
     try:
-        # Load and prepare data
-        X, y = load_data('crop_data.csv')
-        
-        if X is None or y is None:
-            print("Error: Failed to load data")
-            exit(1)
+        df = pd.read_csv(data_path)
+        if 'label' not in df.columns:
+            raise ValueError("Dataset must contain 'label' column")
             
-        # Split the data
+        label_encoder = LabelEncoder()
+        df['label'] = label_encoder.fit_transform(df['label'])
+        
+        X = df.drop('label', axis=1)
+        y = df['label']
+        
+        # Save label encoder
+        encoder_path = Path('label_encoder.pkl')
+        joblib.dump(label_encoder, encoder_path)
+        logger.info(f"Label encoder saved to {encoder_path}")
+        
+        return X, y, label_encoder
+        
+    except FileNotFoundError:
+        logger.error(f"Data file not found: {data_path}")
+        raise
+    except Exception as e:
+        logger.error(f"Error preparing data: {str(e)}")
+        raise
+
+def create_stacking_model() -> StackingClassifier:
+    """
+    Create and configure the stacking classifier model.
+    
+    Returns:
+        StackingClassifier: Configured stacking model with base learners
+    """
+    try:
+        base_learners = [
+            ('knn', KNeighborsClassifier(n_neighbors=5)),
+            ('dt', DecisionTreeClassifier(random_state=42)),
+            ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
+            ('xgb', xgb.XGBClassifier(use_label_encoder=False, eval_metric='mlogloss'))
+        ]
+        
+        meta_learner = LogisticRegression()
+        
+        return StackingClassifier(
+            estimators=base_learners,
+            final_estimator=meta_learner,
+            cv=5
+        )
+    except Exception as e:
+        logger.error(f"Error creating model: {str(e)}")
+        raise
+
+def save_model(model, filepath: str) -> None:
+    """
+    Save the trained model to disk.
+    
+    Args:
+        model: Trained model to save
+        filepath (str): Path where to save the model
+    """
+    try:
+        joblib.dump(model, filepath)
+        logger.info(f"Model saved successfully to {filepath}")
+    except Exception as e:
+        logger.error(f"Error saving model: {str(e)}")
+        raise
+
+def load_model(filepath: str):
+    """
+    Load a trained model from disk.
+    
+    Args:
+        filepath (str): Path to the saved model file
+        
+    Returns:
+        The loaded model
+    """
+    try:
+        model = joblib.load(filepath)
+        logger.info(f"Model loaded successfully from {filepath}")
+        return model
+    except FileNotFoundError:
+        logger.error(f"Model file not found: {filepath}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading model: {str(e)}")
+        raise
+
+def analyze_feature_importance(model, X):
+    """
+    Analyze and visualize feature importance from the Random Forest base model.
+    
+    Args:
+        model: Trained stacking model
+        X: Feature DataFrame
+    """
+    try:
+        # Extract feature importances from Random Forest
+        importances = model.named_estimators_['rf'].feature_importances_
+        features = X.columns
+        
+        # Sort importances
+        indices = np.argsort(importances)[::-1]
+        
+        # Create visualization
+        plt.figure(figsize=(10, 6))
+        plt.title("Feature Importances in Crop Prediction", pad=20)
+        plt.bar(range(len(importances)), importances[indices], align="center")
+        plt.xticks(range(len(importances)), features[indices], rotation=45, ha='right')
+        plt.xlabel("Features")
+        plt.ylabel("Importance Score")
+        plt.tight_layout()
+        
+        # Save the plot
+        plt.savefig('feature_importance.png')
+        plt.close()
+        
+        # Log feature importance information
+        logger.info("\nFeature Importance Rankings:")
+        for idx in indices:
+            logger.info(f"{features[idx]}: {importances[idx]:.4f}")
+            
+    except Exception as e:
+        logger.error(f"Error analyzing feature importance: {str(e)}")
+        raise
+
+def main():
+    """
+    Main function to train and evaluate the crop prediction model.
+    """
+    try:
+        # Prepare data
+        logger.info("Loading and preparing data...")
+        X, y, label_encoder = prepare_data("crop_data.csv")
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42
         )
         
-        # Create and train the stacking model
-        crop_predictor = CropPredictor()
+        # Create and train model
+        logger.info("Training model...")
+        model = create_stacking_model()
+        model.fit(X_train, y_train)
         
-        # Tune hyperparameters (optional)
-        crop_predictor.tune_hyperparameters(X_train, y_train)
+        # Save model with a more descriptive name
+        model_path = 'stacking_crop_model.pkl'
+        save_model(model, model_path)
         
-        # Train the model
-        crop_predictor.fit(X_train, y_train)
+        # Example of loading the model (commented out as it's for demonstration)
+        # loaded_model = load_model('stacking_crop_model.pkl')
         
-        # Get feature importance
-        feature_importance = crop_predictor.get_feature_importance(X.columns)
-        print("\nFeature Importance:")
-        for feature, importance in sorted(feature_importance.items(), 
-                                       key=lambda x: x[1], reverse=True):
-            print(f"{feature}: {importance:.4f}")
+        # Evaluate model with detailed metrics and visualization
+        logger.info("Evaluating model performance...")
+        evaluate_model(model, X_test, y_test, label_encoder)
         
-        # Perform cross-validation
-        cv_scores = cross_val_score(crop_predictor.base_models['rf'], 
-                                  X_train, y_train, cv=5)
-        print(f"\nCross-validation scores: {cv_scores}")
-        print(f"Average CV score: {cv_scores.mean():.2f} (+/- {cv_scores.std() * 2:.2f})")
+        # Analyze feature importance
+        logger.info("Analyzing feature importance...")
+        analyze_feature_importance(model, X)
         
-        # Make predictions
-        predictions = crop_predictor.predict(X_test)
-        
-        # Evaluate the model
-        accuracy = accuracy_score(y_test, predictions)
-        print(f"\nModel Accuracy: {accuracy:.2f}")
-        print("\nClassification Report:")
-        print(classification_report(y_test, predictions))
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
+        logger.error(f"Error in main execution: {str(e)}")
+        raise
+
+def evaluate_model(model, X_test, y_test, label_encoder):
+    """
+    Evaluate model performance with detailed metrics and visualizations.
+    
+    Args:
+        model: Trained model to evaluate
+        X_test: Test features
+        y_test: True labels
+        label_encoder: Fitted label encoder for class names
+    """
+    try:
+        # Make predictions
+        y_pred = model.predict(X_test)
+        
+        # Calculate accuracy
+        accuracy = accuracy_score(y_test, y_pred)
+        logger.info(f"Model Accuracy: {accuracy:.4f}")
+        
+        # Generate detailed classification report
+        y_pred_labels = label_encoder.inverse_transform(y_pred)
+        y_test_labels = label_encoder.inverse_transform(y_test)
+        report = classification_report(y_test_labels, y_pred_labels, 
+                                    target_names=label_encoder.classes_)
+        logger.info("\nClassification Report:\n" + report)
+        
+        # Generate and plot confusion matrix with improved styling
+        cm = confusion_matrix(y_test, y_pred)
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(cm, annot=True, fmt='d', 
+                   xticklabels=label_encoder.classes_,
+                   yticklabels=label_encoder.classes_,
+                   cmap='Blues')
+        plt.title('Crop Prediction Confusion Matrix', pad=20)
+        plt.xlabel('Predicted Label')
+        plt.ylabel('True Label')
+        plt.xticks(rotation=45, ha='right')
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        plt.savefig('confusion_matrix.png', bbox_inches='tight', dpi=300)
+        plt.close()
+        
+        logger.info("Confusion matrix visualization saved as 'confusion_matrix.png'")
+        
+    except Exception as e:
+        logger.error(f"Error in model evaluation: {str(e)}")
+        raise
+
+def predict_crop(input_data: dict) -> str:
+    """
+    Predict crop type based on soil and environmental parameters.
+    
+    Args:
+        input_data (dict): Dictionary containing soil and environmental parameters
+            Required keys: 'N', 'P', 'K', 'temperature', 'humidity', 'pH', 'rainfall'
+            
+    Returns:
+        str: Predicted crop name
+        
+    Raises:
+        ValueError: If input data is missing required features
+        Exception: For other prediction errors
+    """
+    try:
+        # Validate input features
+        required_features = ['N', 'P', 'K', 'temperature', 'humidity', 'pH', 'rainfall']
+        missing_features = [feat for feat in required_features if feat not in input_data]
+        
+        if missing_features:
+            raise ValueError(f"Missing required features: {', '.join(missing_features)}")
+        
+        # Convert input to DataFrame
+        input_df = pd.DataFrame([input_data])
+        
+        # Ensure correct feature order
+        input_df = input_df[required_features]
+        
+        # Make prediction
+        pred_encoded = model.predict(input_df)
+        pred_label = label_encoder.inverse_transform(pred_encoded)
+        
+        return pred_label[0]
+        
+    except ValueError as e:
+        logger.error(f"Invalid input data: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        raise
+
+# Example usage with error handling
+try:
+    new_sample = {
+        'N': 90,
+        'P': 42,
+        'K': 43,
+        'temperature': 20.87,
+        'humidity': 82,
+        'pH': 6.5,
+        'rainfall': 202.93
+    }
+    predicted_crop = predict_crop(new_sample)
+    logger.info(f"Predicted crop: {predicted_crop}")
+    
+except ValueError as e:
+    logger.error(f"Input validation error: {str(e)}")
+except Exception as e:
+    logger.error(f"Unexpected error: {str(e)}")
+
+if __name__ == "__main__":
+    main()

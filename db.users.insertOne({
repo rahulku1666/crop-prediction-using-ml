@@ -1,0 +1,9 @@
+db.users.insertOne({
+    "username": "admin",
+    "password": "<hashed_password>",
+    "role": "admin",
+    "email": "admin@example.com",
+    "name": "Admin User",
+    "created_at": new Date(),
+    "last_login": null
+})

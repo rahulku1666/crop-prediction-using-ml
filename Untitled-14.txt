@@ -1,0 +1,1 @@
+DBPathInUse: Unable to create/open the lock file: C:\Users\RAHUL\Desktop\rahulpython\data\db\mongod.lock (The process cannot access the file because it is being used by another process.)
