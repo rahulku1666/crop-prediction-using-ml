@@ -1,1 +1,0 @@
-return True, {'username': user[0], 'email': user[1], 'is_verified': user[3]}

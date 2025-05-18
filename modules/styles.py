@@ -107,5 +107,54 @@ def load_css():
         padding: 1rem;
         margin: 1rem 0;
     }
+    
+    /* Responsive Enhancements */
+    @media (max-width: 768px) {
+        .glass-card, .weather-card, .metric-card, .knowledge-card {
+            padding: 0.75rem !important;
+            margin: 0.5rem 0 !important;
+            border-radius: 12px !important;
+        }
+        .grid-container {
+            grid-template-columns: 1fr !important;
+            gap: 0.5rem !important;
+        }
+        h1, h2, h3, h4 {
+            font-size: 1.2em !important;
+        }
+        table, th, td {
+            font-size: 0.95em !important;
+        }
+        .modern-form, .modern-input {
+            padding: 0.5rem !important;
+        }
+    }
+    @media (max-width: 480px) {
+        .glass-card, .weather-card, .metric-card, .knowledge-card {
+            padding: 0.5rem !important;
+            margin: 0.25rem 0 !important;
+            border-radius: 8px !important;
+        }
+        h1, h2, h3, h4 {
+            font-size: 1em !important;
+        }
+        .grid-container {
+            grid-template-columns: 1fr !important;
+            gap: 0.25rem !important;
+        }
+        table, th, td {
+            font-size: 0.9em !important;
+        }
+    }
+    /* Make tables scrollable on small screens */
+    table {
+        display: block;
+        overflow-x: auto;
+        width: 100%;
+    }
+    /* Responsive text */
+    body, .main-bg {
+        font-size: 1rem;
+    }
     </style>
     """
